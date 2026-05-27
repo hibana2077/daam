@@ -80,6 +80,8 @@ or `module` keys. For other formats, pass `checkpoint_key="..."` or load the
 weights yourself and pass `state_dict=...`.
 Pass the same `timm.create_model` arguments used during training, such as
 `num_classes` or `img_size`, so checkpoint tensor shapes match the model.
+See [docs/custom_weights.md](docs/custom_weights.md) for a compact custom
+checkpoint guide.
 
 You can also pass an already-created model directly:
 

@@ -10,6 +10,16 @@ from .hooks import ViTAttentionHooks, collect_vit_layers, prefix_tokens, reshape
 
 @dataclass
 class DAAMResult:
+    """Result returned by `TimmViTDAAM.explain()`.
+
+    Attributes:
+        logits: Raw class logits returned by the model, moved to CPU.
+        target_index: Class index used for the backward attribution pass.
+        predicted_index: Top-1 class index from `logits`.
+        maps: Cumulative DAAM maps, one per transformer block, as `uint8` arrays.
+        layer_maps: Per-block DAAM maps before cumulative accumulation.
+    """
+
     logits: torch.Tensor
     target_index: int
     predicted_index: int
@@ -18,19 +28,32 @@ class DAAMResult:
 
     @property
     def final_map(self):
+        """Final cumulative DAAM map as a `uint8` image array, or `None`."""
         return self.maps[-1] if self.maps else None
 
     @property
     def last_layer_map(self):
+        """Last transformer block DAAM map as a `uint8` image array, or `None`."""
         return self.layer_maps[-1] if self.layer_maps else None
 
     @property
     def probabilities(self):
+        """Softmax probabilities computed from `logits`."""
         return torch.softmax(self.logits, dim=-1)
 
 
 class TimmViTDAAM:
-    """DAAM explainer for timm ViT image classifiers."""
+    """DAAM explainer for compatible `timm` Vision Transformer classifiers.
+
+    Use this class when you already have a model object, including a `timm`
+    model with custom weights loaded manually.
+
+    Parameters:
+        model: A `timm` ViT-style classifier with `model.blocks[*].attn`.
+        device: Target device. Use `"auto"` or `None` to prefer CUDA when
+            available.
+        normalize_blocks: Normalize each block map before cumulative rendering.
+    """
 
     def __init__(self, model, device=None, normalize_blocks=True):
         self.device = pick_device(device)
@@ -53,6 +76,28 @@ class TimmViTDAAM:
         strict=True,
         **model_kwargs,
     ):
+        """Build a DAAM explainer from a `timm` model name.
+
+        This keeps the architecture in `timm.create_model()` and optionally
+        loads user-provided weights into that same architecture.
+
+        Parameters:
+            model_name: Model name accepted by `timm.create_model()`.
+            pretrained: Whether to load official `timm` pretrained weights.
+            device: Target device. Use `"auto"` or `None` to prefer CUDA.
+            normalize_blocks: Normalize each block map before accumulation.
+            checkpoint_path: Optional path to a PyTorch checkpoint file.
+            state_dict: Optional state dict or checkpoint mapping already loaded
+                in memory.
+            checkpoint_key: Optional key to select a state dict inside a custom
+                checkpoint mapping.
+            strict: Passed to `model.load_state_dict()`.
+            **model_kwargs: Forwarded to `timm.create_model()`, for example
+                `num_classes`, `img_size`, or `in_chans`.
+
+        Returns:
+            A ready-to-use `TimmViTDAAM` instance.
+        """
         import timm
 
         if checkpoint_path is not None and state_dict is not None:
@@ -68,6 +113,10 @@ class TimmViTDAAM:
         return cls(model, device=device, normalize_blocks=normalize_blocks)
 
     def close(self):
+        """Remove registered model hooks.
+
+        Call this manually when not using `with TimmViTDAAM(...) as daam:`.
+        """
         self.hooks.close()
 
     def __enter__(self):
@@ -77,9 +126,21 @@ class TimmViTDAAM:
         self.close()
 
     def __call__(self, image_tensor, target_index=None):
+        """Alias for `explain(image_tensor, target_index=target_index)`."""
         return self.explain(image_tensor, target_index=target_index)
 
     def explain(self, image_tensor, target_index=None):
+        """Generate DAAM maps for one image tensor.
+
+        Parameters:
+            image_tensor: A normalized tensor shaped `[1, C, H, W]`.
+            target_index: Optional class index to explain. When omitted, DAAM
+                explains the predicted top-1 class.
+
+        Returns:
+            A `DAAMResult` with logits, the explained class, cumulative maps,
+            and per-block maps.
+        """
         if image_tensor.ndim != 4 or image_tensor.shape[0] != 1:
             raise ValueError("DAAM currently expects one image tensor shaped [1, C, H, W].")
 
@@ -158,6 +219,11 @@ def create_daam(
     strict=True,
     **model_kwargs,
 ):
+    """Convenience wrapper around `TimmViTDAAM.from_name()`.
+
+    Parameters match `TimmViTDAAM.from_name()`. This is useful for simple scripts
+    that prefer a function-style API.
+    """
     return TimmViTDAAM.from_name(
         model_name,
         pretrained=pretrained,
@@ -171,6 +237,12 @@ def create_daam(
 
 
 def load_checkpoint_state_dict(checkpoint_path, checkpoint_key=None):
+    """Load a PyTorch checkpoint and return a model state dict.
+
+    The loader accepts a raw state dict or common checkpoint mappings containing
+    keys such as `state_dict`, `model`, `model_state_dict`, or `model_ema`.
+    Use `checkpoint_key` for custom checkpoint layouts.
+    """
     try:
         checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
     except TypeError:
@@ -179,6 +251,12 @@ def load_checkpoint_state_dict(checkpoint_path, checkpoint_key=None):
 
 
 def extract_state_dict(checkpoint, checkpoint_key=None):
+    """Extract a model state dict from a checkpoint mapping.
+
+    This also strips common wrapper prefixes like `module.` and `model.` so
+    checkpoints saved from DDP or training wrappers can be loaded into a plain
+    `timm` model.
+    """
     if checkpoint_key is not None:
         if not isinstance(checkpoint, Mapping) or checkpoint_key not in checkpoint:
             available = sorted(checkpoint.keys()) if isinstance(checkpoint, Mapping) else []
@@ -219,10 +297,20 @@ def strip_state_dict_prefixes(state_dict):
 
 
 def load_model_state_dict(model, state_dict, strict=True):
+    """Load a state dict into `model` after stripping common wrapper prefixes."""
     return model.load_state_dict(strip_state_dict_prefixes(state_dict), strict=strict)
 
 
 def list_timm_vit_models(pretrained=False):
+    """List `timm` model names expected to work with this DAAM implementation.
+
+    Parameters:
+        pretrained: Forwarded to `timm.list_models(pretrained=...)`.
+
+    Returns:
+        Supported ViT-style model names after filtering out known incompatible
+        ViT-named families.
+    """
     import timm
 
     names = timm.list_models(pretrained=pretrained)
