@@ -1,3 +1,4 @@
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 import numpy as np
@@ -40,10 +41,30 @@ class TimmViTDAAM:
         self.hooks = ViTAttentionHooks(self.model)
 
     @classmethod
-    def from_name(cls, model_name, pretrained=True, device=None, normalize_blocks=True, **model_kwargs):
+    def from_name(
+        cls,
+        model_name,
+        pretrained=True,
+        device=None,
+        normalize_blocks=True,
+        checkpoint_path=None,
+        state_dict=None,
+        checkpoint_key=None,
+        strict=True,
+        **model_kwargs,
+    ):
         import timm
 
+        if checkpoint_path is not None and state_dict is not None:
+            raise ValueError("Use either `checkpoint_path` or `state_dict`, not both.")
+
         model = timm.create_model(model_name, pretrained=pretrained, **model_kwargs)
+        if checkpoint_path is not None:
+            state_dict = load_checkpoint_state_dict(checkpoint_path, checkpoint_key=checkpoint_key)
+        elif state_dict is not None:
+            state_dict = extract_state_dict(state_dict, checkpoint_key=checkpoint_key)
+        if state_dict is not None:
+            load_model_state_dict(model, state_dict, strict=strict)
         return cls(model, device=device, normalize_blocks=normalize_blocks)
 
     def close(self):
@@ -127,8 +148,78 @@ class TimmViTDAAM:
         return maps, layer_maps
 
 
-def create_daam(model_name="vit_base_patch16_224", pretrained=True, device=None, **model_kwargs):
-    return TimmViTDAAM.from_name(model_name, pretrained=pretrained, device=device, **model_kwargs)
+def create_daam(
+    model_name="vit_base_patch16_224",
+    pretrained=True,
+    device=None,
+    checkpoint_path=None,
+    state_dict=None,
+    checkpoint_key=None,
+    strict=True,
+    **model_kwargs,
+):
+    return TimmViTDAAM.from_name(
+        model_name,
+        pretrained=pretrained,
+        device=device,
+        checkpoint_path=checkpoint_path,
+        state_dict=state_dict,
+        checkpoint_key=checkpoint_key,
+        strict=strict,
+        **model_kwargs,
+    )
+
+
+def load_checkpoint_state_dict(checkpoint_path, checkpoint_key=None):
+    try:
+        checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
+    except TypeError:
+        checkpoint = torch.load(checkpoint_path, map_location="cpu")
+    return extract_state_dict(checkpoint, checkpoint_key=checkpoint_key)
+
+
+def extract_state_dict(checkpoint, checkpoint_key=None):
+    if checkpoint_key is not None:
+        if not isinstance(checkpoint, Mapping) or checkpoint_key not in checkpoint:
+            available = sorted(checkpoint.keys()) if isinstance(checkpoint, Mapping) else []
+            raise KeyError(f"Checkpoint key {checkpoint_key!r} not found. Available keys: {available}")
+        checkpoint = checkpoint[checkpoint_key]
+
+    if is_state_dict(checkpoint):
+        return strip_state_dict_prefixes(checkpoint)
+
+    if isinstance(checkpoint, Mapping):
+        for key in ("state_dict", "model", "model_state_dict", "model_ema", "net", "network", "module"):
+            value = checkpoint.get(key)
+            if is_state_dict(value):
+                return strip_state_dict_prefixes(value)
+        available = sorted(checkpoint.keys())
+        raise ValueError(
+            "Could not find a model state_dict in the checkpoint. "
+            f"Pass `checkpoint_key` explicitly. Available keys: {available}"
+        )
+
+    raise TypeError("Checkpoint must be a state_dict or a mapping that contains one.")
+
+
+def is_state_dict(value):
+    return isinstance(value, Mapping) and bool(value) and all(torch.is_tensor(item) for item in value.values())
+
+
+def strip_state_dict_prefixes(state_dict):
+    state_dict = dict(state_dict)
+    prefixes = ("module.", "model.")
+    while state_dict:
+        keys = tuple(state_dict.keys())
+        prefix = next((item for item in prefixes if all(key.startswith(item) for key in keys)), None)
+        if prefix is None:
+            return state_dict
+        state_dict = {key[len(prefix) :]: value for key, value in state_dict.items()}
+    return state_dict
+
+
+def load_model_state_dict(model, state_dict, strict=True):
+    return model.load_state_dict(strip_state_dict_prefixes(state_dict), strict=strict)
 
 
 def list_timm_vit_models(pretrained=False):

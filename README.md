@@ -51,10 +51,56 @@ Explain a non-top class by passing a target index:
 result = daam(tensor, target_index=243)
 ```
 
+## Custom Weights
+
+DAAM does not require the official `timm` pretrained weights. If your model is
+still a compatible `timm` ViT architecture, build the same architecture and load
+your own checkpoint:
+
+```python
+from daam import TimmViTDAAM, load_image, overlay_heatmap, prepare_image
+
+image = load_image("InputImage/ILSVRC2012_val_00000269.JPEG")
+
+with TimmViTDAAM.from_name(
+    "vit_base_patch16_224",
+    pretrained=False,
+    checkpoint_path="checkpoints/my_vit.pt",
+    num_classes=100,
+) as daam:
+    tensor = prepare_image(image, daam.model)
+    result = daam(tensor)
+
+overlay_heatmap(image, result.final_map).save("custom_daam_overlay.png")
+```
+
+Common checkpoint formats are detected automatically, including dictionaries
+with `state_dict`, `model`, `model_state_dict`, `model_ema`, `net`, `network`,
+or `module` keys. For other formats, pass `checkpoint_key="..."` or load the
+weights yourself and pass `state_dict=...`.
+Pass the same `timm.create_model` arguments used during training, such as
+`num_classes` or `img_size`, so checkpoint tensor shapes match the model.
+
+You can also pass an already-created model directly:
+
+```python
+import timm
+import torch
+from daam import TimmViTDAAM
+
+model = timm.create_model("vit_base_patch16_224", pretrained=False, num_classes=100)
+checkpoint = torch.load("checkpoints/my_vit.pt", map_location="cpu")
+model.load_state_dict(checkpoint["state_dict"])
+
+with TimmViTDAAM(model) as daam:
+    ...
+```
+
 ## API
 
-- `TimmViTDAAM.from_name(model_name, pretrained=True, device="auto")` builds a
-  supported `timm` classifier and registers attribution hooks.
+- `TimmViTDAAM.from_name(model_name, pretrained=True, device="auto",
+  checkpoint_path=None, state_dict=None, checkpoint_key=None, strict=True)`
+  builds a supported `timm` classifier and registers attribution hooks.
 - `prepare_image(image, model)` applies the inference transform expected by the
   selected model.
 - `DAAMResult.final_map` returns the accumulated attribution map across blocks.
