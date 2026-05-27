@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "daam-timm-vit"
+version = "0.1.0"
+description = "Reusable DAAM visualization helpers for timm ViT classifiers."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy",
+  "pillow",
+  "timm",
+  "torch",
+  "torchvision",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["daam*"]
