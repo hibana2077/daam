@@ -60,14 +60,21 @@ class TimmViTDAAM:
         image_tensor = image_tensor.to(self.device).requires_grad_(True)
         target_size = tuple(image_tensor.shape[-2:])
 
-        self.model.zero_grad(set_to_none=True)
-        with torch.enable_grad():
-            logits = self._logits(self.hooks(image_tensor))
-            predicted = int(logits.argmax(dim=-1).item())
-            target = predicted if target_index is None else int(target_index)
-            logits[:, target].sum().backward()
+        param_states = [param.requires_grad for param in self.model.parameters()]
+        for param in self.model.parameters():
+            param.requires_grad_(False)
+        try:
+            self.model.zero_grad(set_to_none=True)
+            with torch.enable_grad():
+                logits = self._logits(self.hooks(image_tensor))
+                predicted = int(logits.argmax(dim=-1).item())
+                target = predicted if target_index is None else int(target_index)
+                logits[:, target].sum().backward()
 
-        maps = self._build_maps(target_size)
+            maps = self._build_maps(target_size)
+        finally:
+            for param, requires_grad in zip(self.model.parameters(), param_states):
+                param.requires_grad_(requires_grad)
         return DAAMResult(
             logits=logits.detach().cpu(),
             target_index=target,
@@ -89,8 +96,12 @@ class TimmViTDAAM:
         block_maps = []
         for activation, gradient in zip(self.hooks.activations, self.hooks.gradients):
             token_count = activation.shape[1] - self.prefix
-            activation = reshape_tokens(activation, prefix=self.prefix, grid_size=infer_grid(self.model, target_size, token_count))
-            weight = gradient[:, :, None, None].clamp(min=0)
+            activation = reshape_tokens(
+                activation.float(),
+                prefix=self.prefix,
+                grid_size=infer_grid(self.model, target_size, token_count),
+            )
+            weight = gradient.float()[:, :, None, None].clamp(min=0)
             block_map = (activation * weight).sum(dim=1, keepdim=True).clamp(min=0)
             if self.normalize_blocks:
                 block_map = normalize_tensor(block_map)
@@ -120,9 +131,47 @@ def list_timm_vit_models(pretrained=False):
     import timm
 
     names = timm.list_models(pretrained=pretrained)
-    markers = ("vit", "deit", "beit", "eva", "flexivit", "dinov2")
-    blocked = ("swin", "maxvit", "tiny_vit", "levit")
-    return [name for name in names if any(m in name for m in markers) and not any(b in name for b in blocked)]
+    supported_prefixes = ("beit", "deit", "eva", "flexivit", "naflexvit", "vit_", "vitamin")
+    blocked_prefixes = (
+        "convit_",
+        "crossvit_",
+        "davit_",
+        "efficientvit_",
+        "fastvit_",
+        "gcvit_",
+        "gemma4_vit_",
+        "levit_",
+        "maxvit_",
+        "maxxvit_",
+        "maxxvitv2_",
+        "mobilevit_",
+        "mobilevitv2_",
+        "mvitv2_",
+        "nextvit_",
+        "repvit_",
+        "samvit_",
+        "shvit_",
+        "test_vit",
+        "tiny_vit_",
+    )
+    blocked_names = {
+        "vit_base_patch16_18x2_224",
+        "vit_base_patch16_xp_224",
+        "vit_dlittle_patch16_reg1_gap_256",
+        "vit_dpwee_patch16_reg1_gap_256",
+        "vit_dwee_patch16_reg1_gap_256",
+        "vit_huge_patch14_xp_224",
+        "vit_large_patch14_xp_224",
+        "vit_pwee_patch16_reg1_gap_256",
+        "vit_small_patch16_18x2_224",
+    }
+    return [
+        name
+        for name in names
+        if name.startswith(supported_prefixes)
+        and not name.startswith(blocked_prefixes)
+        and name not in blocked_names
+    ]
 
 
 def pick_device(device):

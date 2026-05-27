@@ -38,11 +38,27 @@ def collect_vit_layers(model):
     for index, block in enumerate(model.blocks):
         attn = getattr(block, "attn", None)
         proj = getattr(attn, "proj", None) if attn is not None else None
-        has_qkv = hasattr(attn, "qkv") or all(hasattr(attn, n) for n in ("q_proj", "k_proj", "v_proj"))
+        has_qkv = has_supported_qkv(attn)
         if attn is None or proj is None or not has_qkv:
             raise ValueError(f"Block {index} is not a supported timm ViT attention block.")
         layers.append((attn, proj))
     return layers
+
+
+def has_supported_qkv(attn):
+    if attn is None:
+        return False
+
+    qkv = getattr(attn, "qkv", None)
+    if callable(qkv):
+        out_features = getattr(qkv, "out_features", None)
+        num_heads = getattr(attn, "num_heads", None)
+        head_dim = getattr(attn, "head_dim", None)
+        if out_features and num_heads and head_dim and out_features != 3 * num_heads * head_dim:
+            return False
+        return True
+
+    return all(callable(getattr(attn, name, None)) for name in ("q_proj", "k_proj", "v_proj"))
 
 
 class ViTAttentionHooks:
@@ -132,7 +148,7 @@ def attention_value_product(module, x, prefix=1, use_class_token=True, rope=None
 
 def project_qkv(module, x):
     batch, tokens, _ = x.shape
-    if hasattr(module, "qkv"):
+    if callable(getattr(module, "qkv", None)):
         qkv = qkv_tensor(module, x)
         head_dim = getattr(module, "head_dim", qkv.shape[-1] // (3 * module.num_heads))
         qkv = qkv.reshape(batch, tokens, 3, module.num_heads, head_dim)
