@@ -5,6 +5,8 @@
 Lightweight DAAM attribution toolkit for `timm` Vision Transformer classifiers.
 It turns a single image prediction into cumulative and per-layer attention
 attribution maps that can be inspected, saved, or overlaid on the source image.
+This project is an independent, compact reimplementation of Dynamic
+Accumulated Attention Map for modern `timm` ViT workflows.
 
 ## Highlights
 
@@ -74,6 +76,24 @@ models may still require CUDA memory tuning.
 - One image per call: tensors must be shaped `[1, C, H, W]`.
 - Model output must be a tensor of class logits.
 - Non-ViT architectures are intentionally out of scope.
+
+## Citation
+
+DAAM was introduced in the Pattern Recognition paper below. If this
+implementation supports your research or engineering work, please cite the
+original method:
+
+```bibtex
+@article{yiliaoPR2025dynamic,
+  title={Dynamic Accumulated Attention Map for Interpreting Evolution of Decision-making in Vision Transformer},
+  author={Liao, Yi and Gao, Yongsheng and Zhang, Weichuan},
+  journal={Pattern Recognition},
+  volume={165},
+  pages={111607},
+  year={2025},
+  publisher={Elsevier}
+}
+```
 
 ## License
 
