@@ -13,10 +13,15 @@ class DAAMResult:
     target_index: int
     predicted_index: int
     maps: list[np.ndarray]
+    layer_maps: list[np.ndarray] | None = None
 
     @property
     def final_map(self):
         return self.maps[-1] if self.maps else None
+
+    @property
+    def last_layer_map(self):
+        return self.layer_maps[-1] if self.layer_maps else None
 
     @property
     def probabilities(self):
@@ -71,7 +76,7 @@ class TimmViTDAAM:
                 target = predicted if target_index is None else int(target_index)
                 logits[:, target].sum().backward()
 
-            maps = self._build_maps(target_size)
+            maps, layer_maps = self._build_maps(target_size)
         finally:
             for param, requires_grad in zip(self.model.parameters(), param_states):
                 param.requires_grad_(requires_grad)
@@ -80,6 +85,7 @@ class TimmViTDAAM:
             target_index=target,
             predicted_index=predicted,
             maps=maps,
+            layer_maps=layer_maps,
         )
 
     def _logits(self, output):
@@ -109,6 +115,7 @@ class TimmViTDAAM:
 
         patch_size = common_patch_size(block_maps)
         block_maps = [resize_tensor(cam, patch_size) for cam in block_maps]
+        layer_maps = [render_map(block_map, target_size) for block_map in block_maps]
         total = sum(block_maps)
         final_scale = float(total.max().clamp(min=1e-10))
 
@@ -116,11 +123,8 @@ class TimmViTDAAM:
         running = torch.zeros_like(block_maps[0])
         for block_map in block_maps:
             running = running + block_map
-            cam = torch.sigmoid(5.0 * running / final_scale) - 0.5
-            cam = normalize_tensor(cam)
-            cam = resize_tensor(cam, target_size)[0, 0]
-            maps.append((cam.numpy() * 255).astype(np.uint8))
-        return maps
+            maps.append(render_map(running, target_size, scale=final_scale))
+        return maps, layer_maps
 
 
 def create_daam(model_name="vit_base_patch16_224", pretrained=True, device=None, **model_kwargs):
@@ -189,6 +193,15 @@ def normalize_tensor(tensor):
 
 def resize_tensor(tensor, size):
     return F.interpolate(tensor, size=size, mode="bilinear", align_corners=False).cpu()
+
+
+def render_map(tensor, target_size, scale=None):
+    if scale is None:
+        scale = float(tensor.max().clamp(min=1e-10))
+    cam = torch.sigmoid(5.0 * tensor / scale) - 0.5
+    cam = normalize_tensor(cam)
+    cam = resize_tensor(cam, target_size)[0, 0]
+    return (cam.numpy() * 255).astype(np.uint8)
 
 
 def common_patch_size(maps):
