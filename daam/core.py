@@ -3,9 +3,64 @@ from dataclasses import dataclass
 
 import numpy as np
 import torch
+from PIL import Image
 from torch.nn import functional as F
 
 from .hooks import ViTAttentionHooks, collect_vit_layers, prefix_tokens, reshape_tokens
+
+
+CHECKPOINT_STATE_KEYS = (
+    "state_dict",
+    "model",
+    "model_state_dict",
+    "model_ema",
+    "net",
+    "network",
+    "module",
+)
+STATE_DICT_PREFIXES = ("module.", "model.")
+SUPPORTED_TIMM_PREFIXES = (
+    "beit",
+    "deit",
+    "eva",
+    "flexivit",
+    "naflexvit",
+    "vit_",
+    "vitamin",
+)
+BLOCKED_TIMM_PREFIXES = (
+    "convit_",
+    "crossvit_",
+    "davit_",
+    "efficientvit_",
+    "fastvit_",
+    "gcvit_",
+    "gemma4_vit_",
+    "levit_",
+    "maxvit_",
+    "maxxvit_",
+    "maxxvitv2_",
+    "mobilevit_",
+    "mobilevitv2_",
+    "mvitv2_",
+    "nextvit_",
+    "repvit_",
+    "samvit_",
+    "shvit_",
+    "test_vit",
+    "tiny_vit_",
+)
+BLOCKED_TIMM_NAMES = {
+    "vit_base_patch16_18x2_224",
+    "vit_base_patch16_xp_224",
+    "vit_dlittle_patch16_reg1_gap_256",
+    "vit_dpwee_patch16_reg1_gap_256",
+    "vit_dwee_patch16_reg1_gap_256",
+    "vit_huge_patch14_xp_224",
+    "vit_large_patch14_xp_224",
+    "vit_pwee_patch16_reg1_gap_256",
+    "vit_small_patch16_18x2_224",
+}
 
 
 @dataclass
@@ -53,9 +108,10 @@ class TimmViTDAAM:
         device: Target device. Use `"auto"` or `None` to prefer CUDA when
             available.
         normalize_blocks: Normalize each block map before cumulative rendering.
+            Defaults to `False` to match the reference DAAM scripts.
     """
 
-    def __init__(self, model, device=None, normalize_blocks=True):
+    def __init__(self, model, device=None, normalize_blocks=False):
         self.device = pick_device(device)
         self.model = model.to(self.device).eval()
         self.normalize_blocks = normalize_blocks
@@ -69,7 +125,7 @@ class TimmViTDAAM:
         model_name,
         pretrained=True,
         device=None,
-        normalize_blocks=True,
+        normalize_blocks=False,
         checkpoint_path=None,
         state_dict=None,
         checkpoint_key=None,
@@ -86,6 +142,7 @@ class TimmViTDAAM:
             pretrained: Whether to load official `timm` pretrained weights.
             device: Target device. Use `"auto"` or `None` to prefer CUDA.
             normalize_blocks: Normalize each block map before accumulation.
+                Defaults to `False` to match the reference DAAM scripts.
             checkpoint_path: Optional path to a PyTorch checkpoint file.
             state_dict: Optional state dict or checkpoint mapping already loaded
                 in memory.
@@ -144,7 +201,7 @@ class TimmViTDAAM:
         if image_tensor.ndim != 4 or image_tensor.shape[0] != 1:
             raise ValueError("DAAM currently expects one image tensor shaped [1, C, H, W].")
 
-        image_tensor = image_tensor.to(self.device).requires_grad_(True)
+        image_tensor = image_tensor.to(self.device).detach().requires_grad_(True)
         target_size = tuple(image_tensor.shape[-2:])
 
         param_states = [param.requires_grad for param in self.model.parameters()]
@@ -154,8 +211,7 @@ class TimmViTDAAM:
             self.model.zero_grad(set_to_none=True)
             with torch.enable_grad():
                 logits = self._logits(self.hooks(image_tensor))
-                predicted = int(logits.argmax(dim=-1).item())
-                target = predicted if target_index is None else int(target_index)
+                predicted, target = self._select_target_index(logits, target_index)
                 logits[:, target].sum().backward()
 
             maps, layer_maps = self._build_maps(target_size)
@@ -171,15 +227,33 @@ class TimmViTDAAM:
         )
 
     def _logits(self, output):
+        """Return logits from a model output and reject unsupported outputs."""
         if isinstance(output, (tuple, list)):
             output = output[0]
         if not torch.is_tensor(output):
             raise TypeError("The timm model must return a tensor of class logits.")
         return output
 
+    def _select_target_index(self, logits, target_index):
+        """Choose the explained class and validate it against the logits size."""
+        predicted = int(logits.argmax(dim=-1).item())
+        target = predicted if target_index is None else int(target_index)
+        class_count = logits.shape[-1]
+        if target < 0 or target >= class_count:
+            raise ValueError(f"target_index must be in [0, {class_count - 1}], got {target}.")
+        return predicted, target
+
     def _build_maps(self, target_size):
+        """Build cumulative and per-block DAAM maps from saved hook tensors."""
+        if not self.hooks.activations:
+            raise RuntimeError("Could not collect DAAM activations from the model.")
         if len(self.hooks.activations) != len(self.hooks.gradients):
-            raise RuntimeError("Could not collect matching DAAM activations and gradients.")
+            activation_count = len(self.hooks.activations)
+            gradient_count = len(self.hooks.gradients)
+            raise RuntimeError(
+                "Could not collect matching DAAM activations and gradients "
+                f"({activation_count} activations, {gradient_count} gradients)."
+            )
 
         block_maps = []
         for activation, gradient in zip(self.hooks.activations, self.hooks.gradients):
@@ -213,6 +287,7 @@ def create_daam(
     model_name="vit_base_patch16_224",
     pretrained=True,
     device=None,
+    normalize_blocks=False,
     checkpoint_path=None,
     state_dict=None,
     checkpoint_key=None,
@@ -228,6 +303,7 @@ def create_daam(
         model_name,
         pretrained=pretrained,
         device=device,
+        normalize_blocks=normalize_blocks,
         checkpoint_path=checkpoint_path,
         state_dict=state_dict,
         checkpoint_key=checkpoint_key,
@@ -260,14 +336,17 @@ def extract_state_dict(checkpoint, checkpoint_key=None):
     if checkpoint_key is not None:
         if not isinstance(checkpoint, Mapping) or checkpoint_key not in checkpoint:
             available = sorted(checkpoint.keys()) if isinstance(checkpoint, Mapping) else []
-            raise KeyError(f"Checkpoint key {checkpoint_key!r} not found. Available keys: {available}")
+            raise KeyError(
+                f"Checkpoint key {checkpoint_key!r} not found. "
+                f"Available keys: {available}"
+            )
         checkpoint = checkpoint[checkpoint_key]
 
     if is_state_dict(checkpoint):
         return strip_state_dict_prefixes(checkpoint)
 
     if isinstance(checkpoint, Mapping):
-        for key in ("state_dict", "model", "model_state_dict", "model_ema", "net", "network", "module"):
+        for key in CHECKPOINT_STATE_KEYS:
             value = checkpoint.get(key)
             if is_state_dict(value):
                 return strip_state_dict_prefixes(value)
@@ -281,15 +360,23 @@ def extract_state_dict(checkpoint, checkpoint_key=None):
 
 
 def is_state_dict(value):
-    return isinstance(value, Mapping) and bool(value) and all(torch.is_tensor(item) for item in value.values())
+    """Return `True` when `value` looks like a PyTorch model state dict."""
+    return (
+        isinstance(value, Mapping)
+        and bool(value)
+        and all(torch.is_tensor(item) for item in value.values())
+    )
 
 
 def strip_state_dict_prefixes(state_dict):
+    """Remove wrapper prefixes repeatedly while every key shares the prefix."""
     state_dict = dict(state_dict)
-    prefixes = ("module.", "model.")
     while state_dict:
         keys = tuple(state_dict.keys())
-        prefix = next((item for item in prefixes if all(key.startswith(item) for key in keys)), None)
+        prefix = next(
+            (item for item in STATE_DICT_PREFIXES if all(key.startswith(item) for key in keys)),
+            None,
+        )
         if prefix is None:
             return state_dict
         state_dict = {key[len(prefix) :]: value for key, value in state_dict.items()}
@@ -314,56 +401,24 @@ def list_timm_vit_models(pretrained=False):
     import timm
 
     names = timm.list_models(pretrained=pretrained)
-    supported_prefixes = ("beit", "deit", "eva", "flexivit", "naflexvit", "vit_", "vitamin")
-    blocked_prefixes = (
-        "convit_",
-        "crossvit_",
-        "davit_",
-        "efficientvit_",
-        "fastvit_",
-        "gcvit_",
-        "gemma4_vit_",
-        "levit_",
-        "maxvit_",
-        "maxxvit_",
-        "maxxvitv2_",
-        "mobilevit_",
-        "mobilevitv2_",
-        "mvitv2_",
-        "nextvit_",
-        "repvit_",
-        "samvit_",
-        "shvit_",
-        "test_vit",
-        "tiny_vit_",
-    )
-    blocked_names = {
-        "vit_base_patch16_18x2_224",
-        "vit_base_patch16_xp_224",
-        "vit_dlittle_patch16_reg1_gap_256",
-        "vit_dpwee_patch16_reg1_gap_256",
-        "vit_dwee_patch16_reg1_gap_256",
-        "vit_huge_patch14_xp_224",
-        "vit_large_patch14_xp_224",
-        "vit_pwee_patch16_reg1_gap_256",
-        "vit_small_patch16_18x2_224",
-    }
     return [
         name
         for name in names
-        if name.startswith(supported_prefixes)
-        and not name.startswith(blocked_prefixes)
-        and name not in blocked_names
+        if name.startswith(SUPPORTED_TIMM_PREFIXES)
+        and not name.startswith(BLOCKED_TIMM_PREFIXES)
+        and name not in BLOCKED_TIMM_NAMES
     ]
 
 
 def pick_device(device):
+    """Resolve a user-provided device string into a concrete torch device."""
     if device is None or device == "auto":
         return torch.device("cuda" if torch.cuda.is_available() else "cpu")
     return torch.device(device)
 
 
 def normalize_tensor(tensor):
+    """Normalize each batch item independently into the `[0, 1]` range."""
     flat = tensor.flatten(1)
     low = flat.min(dim=1).values[:, None, None, None]
     high = flat.max(dim=1).values[:, None, None, None]
@@ -371,25 +426,38 @@ def normalize_tensor(tensor):
 
 
 def resize_tensor(tensor, size):
+    """Resize a BCHW tensor with bilinear interpolation and move it to CPU."""
     return F.interpolate(tensor, size=size, mode="bilinear", align_corners=False).cpu()
 
 
 def render_map(tensor, target_size, scale=None):
+    """Render a DAAM tensor as a `uint8` heatmap matching `target_size`."""
     if scale is None:
         scale = float(tensor.max().clamp(min=1e-10))
     cam = torch.sigmoid(5.0 * tensor / scale) - 0.5
     cam = normalize_tensor(cam)
-    cam = resize_tensor(cam, target_size)[0, 0]
-    return (cam.numpy() * 255).astype(np.uint8)
+    cam = (cam[0, 0].cpu().numpy() * 255).astype(np.uint8)
+    return resize_heatmap_array(cam, target_size)
+
+
+def resize_heatmap_array(heatmap, target_size):
+    """Resize a 2D heatmap array to `(height, width)` when needed."""
+    if heatmap.shape == tuple(target_size):
+        return heatmap
+    height, width = target_size
+    resampling = getattr(Image, "Resampling", Image).BILINEAR
+    return np.asarray(Image.fromarray(heatmap).resize((width, height), resampling))
 
 
 def common_patch_size(maps):
+    """Return the largest spatial size shared by a list of DAAM tensors."""
     height = max(cam.shape[-2] for cam in maps)
     width = max(cam.shape[-1] for cam in maps)
     return height, width
 
 
 def infer_grid(model, image_size, token_count):
+    """Infer the ViT patch grid used to reshape flat patch tokens."""
     patch_embed = getattr(model, "patch_embed", None)
     patch_size = getattr(patch_embed, "patch_size", None)
     if isinstance(patch_size, int):

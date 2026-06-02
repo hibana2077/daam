@@ -101,7 +101,8 @@ with TimmViTDAAM(model) as daam:
 ## API
 
 - `TimmViTDAAM.from_name(model_name, pretrained=True, device="auto",
-  checkpoint_path=None, state_dict=None, checkpoint_key=None, strict=True)`
+  normalize_blocks=False, checkpoint_path=None, state_dict=None,
+  checkpoint_key=None, strict=True)`
   builds a supported `timm` classifier and registers attribution hooks.
 - `prepare_image(image, model)` applies the inference transform expected by the
   selected model.
