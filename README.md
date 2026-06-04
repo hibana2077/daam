@@ -1,6 +1,6 @@
 # DAAM for timm Vision Transformers
 
-![DAAM attribution overlays for timm ViT models](Cover.png)
+![DAAM attribution overlays for timm ViT models](https://raw.githubusercontent.com/hibana2077/daam/main/Cover.png)
 
 Lightweight DAAM attribution toolkit for `timm` Vision Transformer classifiers.
 It turns a single image prediction into cumulative and per-layer attention
@@ -18,6 +18,14 @@ Accumulated Attention Map for modern `timm` ViT workflows.
 
 ## Installation
 
+After the package is published to PyPI:
+
+```bash
+pip install daam-timm-vit
+```
+
+For local development:
+
 ```bash
 pip install -e .
 ```
@@ -27,6 +35,10 @@ For the pinned local environment:
 ```bash
 pip install -r requirements.txt
 ```
+
+See the
+[PyPI release guide](https://github.com/hibana2077/daam/blob/main/docs/pypi_release_guide.md)
+for the release checklist used to publish this package to PyPI.
 
 ## Quick Start
 
@@ -80,8 +92,9 @@ or `module` keys. For other formats, pass `checkpoint_key="..."` or load the
 weights yourself and pass `state_dict=...`.
 Pass the same `timm.create_model` arguments used during training, such as
 `num_classes` or `img_size`, so checkpoint tensor shapes match the model.
-See [docs/custom_weights.md](docs/custom_weights.md) for a compact custom
-checkpoint guide.
+See the
+[custom checkpoint guide](https://github.com/hibana2077/daam/blob/main/docs/custom_weights.md)
+for a compact custom checkpoint guide.
 
 You can also pass an already-created model directly:
 
@@ -116,9 +129,10 @@ DAAM targets ViT-style `timm` classifiers with `model.blocks[*].attn` attention
 blocks. Validated families include BEiT, DeiT, EVA, FlexiViT, NaFlexViT, ViT,
 and ViTamin variants.
 
-See [docs/support_list.md](docs/support_list.md) for the smoke-tested model
-list. Support means hook compatibility for DAAM forward/backward passes; large
-models may still require CUDA memory tuning.
+See the
+[smoke-tested model list](https://github.com/hibana2077/daam/blob/main/docs/support_list.md).
+Support means hook compatibility for DAAM forward/backward passes; large models
+may still require CUDA memory tuning.
 
 ## Constraints
 

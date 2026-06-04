@@ -1,13 +1,37 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "daam-timm-vit"
 version = "0.1.0"
 description = "Reusable DAAM visualization helpers for timm ViT classifiers."
-readme = "README.md"
+readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+  { name = "hibana2077" },
+]
+keywords = [
+  "attention",
+  "attribution",
+  "daam",
+  "explainability",
+  "pytorch",
+  "timm",
+  "vision-transformer",
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Science/Research",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+]
 dependencies = [
   "numpy",
   "pillow",
@@ -15,6 +39,17 @@ dependencies = [
   "torch",
   "torchvision",
 ]
+
+[project.optional-dependencies]
+dev = [
+  "build",
+  "twine",
+]
+
+[project.urls]
+Homepage = "https://github.com/hibana2077/daam"
+Repository = "https://github.com/hibana2077/daam"
+Issues = "https://github.com/hibana2077/daam/issues"
 
 [tool.setuptools.packages.find]
 where = ["."]
