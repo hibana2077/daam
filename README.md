@@ -1,6 +1,6 @@
 # DAAM for timm Vision Transformers
 
-![DAAM attribution overlays for timm ViT models](https://raw.githubusercontent.com/hibana2077/daam/main/Cover.png)
+![DAAM attribution overlays for timm ViT models](https://raw.githubusercontent.com/hibana2077/daam/refs/heads/main/Cover.png)
 
 Lightweight DAAM attribution toolkit for `timm` Vision Transformer classifiers.
 It turns a single image prediction into cumulative and per-layer attention
