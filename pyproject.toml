@@ -1,27 +1,17 @@
 [build-system]
-requires = ["setuptools>=77", "wheel"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "daam-timm-vit"
-version = "0.1.0"
-description = "Reusable DAAM visualization helpers for timm ViT classifiers."
+version = "0.2.1"
+description = "Dynamic Accumulated Attention Map (DAAM) for timm Vision Transformers."
 readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.10"
 license = "MIT"
 license-files = ["LICENSE"]
-authors = [
-  { name = "hibana2077" },
-]
-keywords = [
-  "attention",
-  "attribution",
-  "daam",
-  "explainability",
-  "pytorch",
-  "timm",
-  "vision-transformer",
-]
+authors = [{ name = "hibana2077" }]
+keywords = ["attention", "attribution", "daam", "explainability", "pytorch", "timm", "vision-transformer"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Developers",
@@ -32,25 +22,16 @@ classifiers = [
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
   "Topic :: Software Development :: Libraries :: Python Modules",
 ]
-dependencies = [
-  "numpy",
-  "pillow",
-  "timm",
-  "torch",
-  "torchvision",
-]
+dependencies = ["numpy", "pillow", "timm>=1.0", "torch"]
 
 [project.optional-dependencies]
-dev = [
-  "build",
-  "twine",
-]
+dev = ["build", "twine"]
 
 [project.urls]
 Homepage = "https://github.com/hibana2077/daam"
 Repository = "https://github.com/hibana2077/daam"
 Issues = "https://github.com/hibana2077/daam/issues"
+Paper = "https://arxiv.org/abs/2503.14640"
 
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["daam*"]
+[tool.setuptools]
+packages = ["daam"]

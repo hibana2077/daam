@@ -1,150 +1,88 @@
 # DAAM for timm Vision Transformers
 
-![DAAM attribution overlays for timm ViT models](https://raw.githubusercontent.com/hibana2077/daam/refs/heads/main/Cover.png)
+![DAAM attention flow](https://raw.githubusercontent.com/hibana2077/daam/refs/heads/main/Cover.png)
 
-Lightweight DAAM attribution toolkit for `timm` Vision Transformer classifiers.
-It turns a single image prediction into cumulative and per-layer attention
-attribution maps that can be inspected, saved, or overlaid on the source image.
-This project is an independent, compact reimplementation of Dynamic
-Accumulated Attention Map for modern `timm` ViT workflows.
-
-## Highlights
-
-- Native `timm` integration for ViT-style image classifiers.
-- Model-aware preprocessing through `timm.data.resolve_model_data_config`.
-- Gradient-weighted attribution for the predicted class or a custom target.
-- Cumulative maps, per-block maps, and PIL heatmap overlay utilities.
-- Explicit hook lifecycle with CPU/CUDA device selection.
-
-## Installation
-
-After the package is published to PyPI:
+A compact, `timm`-native implementation of **Dynamic Accumulated Attention Map**
+(Liao, Gao, Zhang — Pattern Recognition 2025, [arXiv:2503.14640](https://arxiv.org/abs/2503.14640)).
+It reveals the *attention flow*: one map per transformer block, accumulated from
+the first block to the last, showing how the decision-making token forms its
+attention.
 
 ```bash
 pip install daam-timm-vit
 ```
 
-For local development:
-
-```bash
-pip install -e .
-```
-
-For the pinned local environment:
-
-```bash
-pip install -r requirements.txt
-```
-
-See the
-[PyPI release guide](https://github.com/hibana2077/daam/blob/main/docs/pypi_release_guide.md)
-for the release checklist used to publish this package to PyPI.
-
-## Quick Start
-
-```python
-from daam import TimmViTDAAM, load_image, overlay_heatmap, prepare_image
-
-image = load_image("InputImage/ILSVRC2012_val_00000269.JPEG")
-
-with TimmViTDAAM.from_name("vit_base_patch16_224", pretrained=True) as daam:
-    tensor = prepare_image(image, daam.model)
-    result = daam(tensor)
-
-overlay = overlay_heatmap(image, result.final_map)
-overlay.save("daam_overlay.png")
-
-print(result.predicted_index, result.probabilities.max().item())
-```
-
-Explain a non-top class by passing a target index:
-
-```python
-result = daam(tensor, target_index=243)
-```
-
-## Custom Weights
-
-DAAM does not require the official `timm` pretrained weights. If your model is
-still a compatible `timm` ViT architecture, build the same architecture and load
-your own checkpoint:
-
-```python
-from daam import TimmViTDAAM, load_image, overlay_heatmap, prepare_image
-
-image = load_image("InputImage/ILSVRC2012_val_00000269.JPEG")
-
-with TimmViTDAAM.from_name(
-    "vit_base_patch16_224",
-    pretrained=False,
-    checkpoint_path="checkpoints/my_vit.pt",
-    num_classes=100,
-) as daam:
-    tensor = prepare_image(image, daam.model)
-    result = daam(tensor)
-
-overlay_heatmap(image, result.final_map).save("custom_daam_overlay.png")
-```
-
-Common checkpoint formats are detected automatically, including dictionaries
-with `state_dict`, `model`, `model_state_dict`, `model_ema`, `net`, `network`,
-or `module` keys. For other formats, pass `checkpoint_key="..."` or load the
-weights yourself and pass `state_dict=...`.
-Pass the same `timm.create_model` arguments used during training, such as
-`num_classes` or `img_size`, so checkpoint tensor shapes match the model.
-See the
-[custom checkpoint guide](https://github.com/hibana2077/daam/blob/main/docs/custom_weights.md)
-for a compact custom checkpoint guide.
-
-You can also pass an already-created model directly:
+## Quick start
 
 ```python
 import timm
-import torch
-from daam import TimmViTDAAM
+from PIL import Image
+from daam import DAAM, heatmap, overlay
 
-model = timm.create_model("vit_base_patch16_224", pretrained=False, num_classes=100)
-checkpoint = torch.load("checkpoints/my_vit.pt", map_location="cpu")
-model.load_state_dict(checkpoint["state_dict"])
+model = timm.create_model("deit_small_patch16_224", pretrained=True)
+transform = timm.data.create_transform(**timm.data.resolve_model_data_config(model))
 
-with TimmViTDAAM(model) as daam:
-    ...
+image = Image.open("InputImage/ILSVRC2012_val_00046384.JPEG").convert("RGB")
+with DAAM(model) as daam:
+    result = daam(transform(image).unsqueeze(0))          # explains the top-1 class
+    # result = daam(x, target=74)                          # or any class index
+
+maps = heatmap(result.maps[0], size=image.size[::-1])     # (num_blocks, H, W) uint8
+overlay(image, maps[-1]).save("daam.jpg")                 # final block
+for b, hm in enumerate(maps, 1):                          # the whole flow
+    overlay(image, hm).save(f"daam_block{b}.jpg")
 ```
 
-## API
+`python example.py [model_name]` runs this on `InputImage/` and writes to `results/`.
 
-- `TimmViTDAAM.from_name(model_name, pretrained=True, device="auto",
-  normalize_blocks=False, checkpoint_path=None, state_dict=None,
-  checkpoint_key=None, strict=True)`
-  builds a supported `timm` classifier and registers attribution hooks.
-- `prepare_image(image, model)` applies the inference transform expected by the
-  selected model.
-- `DAAMResult.final_map` returns the accumulated attribution map across blocks.
-- `DAAMResult.last_layer_map` returns the attribution map from the final block.
-- `overlay_heatmap(image, heatmap, alpha=0.45)` returns a blended PIL image.
+## Two variants
 
-## Supported Models
+The paper defines the channel importance coefficients C_b = ∂Y/∂T_b for two settings.
+Pick one with `mode=`, or leave it `None` to infer from the model (`'feature'` iff
+`model.num_classes == 0`):
 
-DAAM targets ViT-style `timm` classifiers with `model.blocks[*].attn` attention
-blocks. Validated families include BEiT, DeiT, EVA, FlexiViT, NaFlexViT, ViT,
-and ViTamin variants.
+| `mode` | Y | `target` |
+| --- | --- | --- |
+| `'class'` (needs a head) | class score (Eq. 8) | class index, default top-1 |
+| `'feature'` (head ignored; uses the pre-logits feature) | feature · dimension-wise weight w (Eq. 13) | optional `(K, D)` reference features (k-NN memory bank neighbours, class prototypes, …); default: the image's own feature, w_d = f̂_d² |
 
-See the
-[smoke-tested model list](https://github.com/hibana2077/daam/blob/main/docs/support_list.md).
-Support means hook compatibility for DAAM forward/backward passes; large models
-may still require CUDA memory tuning.
+```python
+model = timm.create_model("vit_small_patch14_dinov2", pretrained=True)   # no head → 'feature'
+with DAAM(model) as daam:
+    result = daam(x)                      # label-free
+    result = daam(x, target=bank[idx])    # weight from k-NN neighbours, as in the paper
 
-## Constraints
+model = timm.create_model("deit_small_patch16_224", pretrained=True)      # has a head
+with DAAM(model) as daam:
+    result = daam(x, mode="feature")      # explain the backbone feature, ignore the head
+    result = daam(x, mode="class", target=74)
+```
 
-- One image per call: tensors must be shaped `[1, C, H, W]`.
-- Model output must be a tensor of class logits.
-- Non-ViT architectures are intentionally out of scope.
+## What you get
+
+- `result.block_maps` — `(B, L, h, w)` per-block maps L_b on the patch grid (Eq. 9).
+- `result.maps` — `(B, L, h, w)` accumulated maps L_{b,DAAM} (Eq. 11–12).
+- `result.output`, `result.target` — logits/features and the explained class.
+- `heatmap(maps, size)` — official rendering: scale by the final block's max, `sigmoid(5x) − 0.5`, min-max, bilinear upsample → uint8.
+- `overlay(image, hm, alpha=0.4)` — jet-style blend as a PIL image.
+
+## Supported models
+
+Any timm model with `model.blocks[*].attn` exposing `attn_drop`/`proj` (ViT, DeiT,
+DINOv2/v3, EVA/EVA02, BEiT, FlexiViT, …) and `global_pool` of `'token'` (the
+paper's [CLS] decomposition) or `'avg'` (the mean patch token is decomposed the
+same way). Register tokens are handled. The attention matrix is read from timm's
+own non-fused path, so RoPE, q/k-norm and relative position bias need no special
+casing; `fused_attn` is restored on `close()`.
+
+Custom weights: use timm — `timm.create_model(name, checkpoint_path="my.pt", num_classes=...)`.
+
+## Development
+
+`python test_daam.py` runs the self-check (random weights, CPU). Releases follow the
+[PyPI release guide](https://github.com/hibana2077/daam/blob/main/docs/pypi_release_guide.md).
 
 ## Citation
-
-DAAM was introduced in the Pattern Recognition paper below. If this
-implementation supports your research or engineering work, please cite the
-original method:
 
 ```bibtex
 @article{yiliaoPR2025dynamic,
@@ -158,6 +96,4 @@ original method:
 }
 ```
 
-## License
-
-MIT.
+MIT license. Official code: <https://github.com/ly9802/DynamicAccumulatedAttentionMap>
